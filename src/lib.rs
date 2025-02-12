@@ -2,11 +2,33 @@
 extern crate proc_macro;
 use proc_macro::TokenStream;
 use quote::quote;
-use syn::{parse::Parse, punctuated::Punctuated, spanned::Spanned, Error, ItemFn, Path, Token};
+use syn::{
+    parse::Parse, punctuated::Punctuated, spanned::Spanned, Error, Expr, ItemFn, Path, Token,
+};
 
-// Add parser for comma-separated decorator paths
+// Parser for a single decorator with optional arguments
+struct DecoratorCall {
+    path: Path,
+    args: Option<Punctuated<Expr, Token![,]>>,
+}
+
+impl Parse for DecoratorCall {
+    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        let path = input.parse()?;
+        let args = if input.peek(syn::token::Paren) {
+            let content;
+            syn::parenthesized!(content in input);
+            Some(Punctuated::parse_terminated(&content)?)
+        } else {
+            None
+        };
+        Ok(DecoratorCall { path, args })
+    }
+}
+
+// Parser for comma-separated decorators
 struct DecoratorList {
-    decorators: Punctuated<Path, Token![,]>,
+    decorators: Punctuated<DecoratorCall, Token![,]>,
 }
 
 impl Parse for DecoratorList {
@@ -88,24 +110,47 @@ fn create_error(span: proc_macro2::Span, message: &str, help: Option<&str>) -> E
 ///     x
 /// }
 /// ```
+///
+/// Decorator with arguments:
+/// ```rust
+/// use decorate_macro::decorate;
+///
+/// fn with_retry<F, R>(attempts: u32, f: F) -> R
+/// where
+///     F: Fn() -> R,  // Changed from FnOnce to Fn
+/// {
+///     let mut last_error = None;
+///     for _ in 0..attempts {
+///         match std::panic::catch_unwind(std::panic::AssertUnwindSafe(&f)) {
+///             Ok(result) => return result,
+///             Err(e) => last_error = Some(e),
+///         }
+///     }
+///     panic!("Failed after {} attempts", attempts)
+/// }
+///
+/// #[decorate(with_retry(3))]
+/// fn fallible_operation() -> i32 {
+///     42
+/// }
+/// ```
 #[proc_macro_attribute]
 pub fn decorate(attr: TokenStream, item: TokenStream) -> TokenStream {
-    // Parse the list of decorator paths
-    let decorator_list =
-        match syn::parse::<DecoratorList>(attr) {
-            Ok(list) if list.decorators.is_empty() => return TokenStream::from(
+    // Parse the list of decorator calls
+    let decorator_list = match syn::parse::<DecoratorList>(attr) {
+        Ok(list) if list.decorators.is_empty() => {
+            return TokenStream::from(
                 create_error(
                     proc_macro2::Span::call_site(),
                     "No decorator paths provided",
-                    Some(
-                        "Expected at least one decorator function, e.g., #[decorate(my_decorator)]",
-                    ),
+                    Some("Expected at least one decorator function"),
                 )
                 .to_compile_error(),
-            ),
-            Ok(list) => list,
-            Err(e) => return TokenStream::from(e.to_compile_error()),
-        };
+            )
+        }
+        Ok(list) => list,
+        Err(e) => return TokenStream::from(e.to_compile_error()),
+    };
 
     let input_fn = match syn::parse::<ItemFn>(item) {
         Ok(f) => f,
@@ -128,15 +173,21 @@ pub fn decorate(attr: TokenStream, item: TokenStream) -> TokenStream {
     let sig = &input_fn.sig;
     let body = &input_fn.block;
 
-    // Build nested decorator calls
+    // Build nested decorator calls with arguments
     let mut decorated_body = quote! { #body };
     for decorator in decorator_list.decorators.iter().rev() {
-        decorated_body = quote! {
-            #decorator(|| #decorated_body)
+        let path = &decorator.path;
+        decorated_body = if let Some(args) = &decorator.args {
+            quote! {
+                #path(#args, || #decorated_body)
+            }
+        } else {
+            quote! {
+                #path(|| #decorated_body)
+            }
         };
     }
 
-    // Generate the decorated function
     let output = quote! {
         #vis #sig {
             #decorated_body
