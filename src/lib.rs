@@ -2,7 +2,16 @@
 extern crate proc_macro;
 use proc_macro::TokenStream;
 use quote::quote;
-use syn::{ItemFn, Path};
+use syn::{spanned::Spanned, Error, ItemFn, Path};
+
+// Helper function to create decorated error messages
+fn create_error(span: proc_macro2::Span, message: &str, help: Option<&str>) -> Error {
+    let mut err = Error::new(span, message);
+    if let Some(help_msg) = help {
+        err.combine(Error::new(span, help_msg));
+    }
+    err
+}
 
 /// Decorates a function with a wrapper that provides additional functionality.
 ///
@@ -58,22 +67,65 @@ use syn::{ItemFn, Path};
 /// ```
 #[proc_macro_attribute]
 pub fn decorate(attr: TokenStream, item: TokenStream) -> TokenStream {
-    // Parse inputs or return error messages
-    let decorator_path = match syn::parse::<Path>(attr) {
+    // Parse decorator path with improved error message
+    let decorator_path = match syn::parse::<Path>(attr.clone()) {
         Ok(path) => path,
-        Err(e) => return TokenStream::from(e.to_compile_error()),
+        Err(_) => {
+            return TokenStream::from(
+                create_error(
+                    proc_macro2::Span::call_site(),
+                    "Invalid decorator path",
+                    Some("Expected a function path, e.g., #[decorate(my_decorator)]"),
+                )
+                .to_compile_error(),
+            )
+        }
     };
 
-    let input_fn = match syn::parse::<ItemFn>(item) {
+    // Parse function with detailed error
+    let input_fn = match syn::parse::<ItemFn>(item.clone()) {
         Ok(f) => f,
-        Err(e) => return TokenStream::from(e.to_compile_error()),
+        Err(_) => {
+            return TokenStream::from(
+                create_error(
+                    proc_macro2::Span::call_site(),
+                    "Invalid function definition",
+                    Some("The decorate attribute can only be applied to functions"),
+                )
+                .to_compile_error(),
+            )
+        }
     };
+
+    // Validate decorator path exists in scope
+    if decorator_path.segments.is_empty() {
+        return TokenStream::from(
+            create_error(
+                decorator_path.span(),
+                "Empty decorator path",
+                Some("Specify a valid decorator function name"),
+            )
+            .to_compile_error(),
+        );
+    }
+
+    // Validate function signature
+    if input_fn.sig.constness.is_some() {
+        return TokenStream::from(
+            create_error(
+                input_fn.sig.constness.span(),
+                "Cannot decorate const functions",
+                Some("The decorate attribute cannot be used with const functions"),
+            )
+            .to_compile_error(),
+        );
+    }
 
     let vis = &input_fn.vis;
     let sig = &input_fn.sig;
     let body = &input_fn.block;
 
-    // Generate the decorated function with generics support
+    // Generate the decorated function
     let output = quote! {
         #vis #sig {
             #decorator_path(|| #body)

@@ -1,0 +1,11 @@
+error: Cannot decorate const functions
+  --> tests/fail/const_fn.rs:11:1
+   |
+11 | const fn constant_fn(x: i32) -> i32 {
+   | ^^^^^
+
+error: The decorate attribute cannot be used with const functions
+  --> tests/fail/const_fn.rs:11:1
+   |
+11 | const fn constant_fn(x: i32) -> i32 {
+   | ^^^^^
