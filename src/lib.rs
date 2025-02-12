@@ -1,19 +1,61 @@
 // src/lib.rs
 extern crate proc_macro;
 use proc_macro::TokenStream;
-use quote::quote;
+use quote::{quote, ToTokens};
 use syn::{
     parse::Parse, punctuated::Punctuated, spanned::Spanned, Error, Expr, ItemFn, Path, Token,
 };
 
+// Parser for self path from string literal
+fn parse_self_path(s: &str) -> syn::Result<syn::Expr> {
+    let segments: Vec<&str> = s.split('.').collect();
+    if segments.is_empty() || segments[0] != "self" {
+        return Err(Error::new(
+            proc_macro2::Span::call_site(),
+            "Path must start with 'self'",
+        ));
+    }
+
+    let mut expr = syn::parse_str::<syn::Expr>("self")?;
+    for segment in segments.iter().skip(1) {
+        let expr_tokens = expr.to_token_stream().to_string();
+        expr = syn::parse_str(&format!("({}).{}", expr_tokens, segment))?;
+    }
+    Ok(expr)
+}
+
 // Parser for a single decorator with optional arguments
 struct DecoratorCall {
-    path: Path,
+    path: Either<Path, syn::Expr>,
     args: Option<Punctuated<Expr, Token![,]>>,
+}
+
+// Update Either enum
+enum Either<A, B> {
+    Left(A),
+    Right(B),
 }
 
 impl Parse for DecoratorCall {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        if input.peek(syn::LitStr) {
+            let path_str: syn::LitStr = input.parse()?;
+            let path_expr = parse_self_path(&path_str.value())?;
+
+            let args = if input.peek(syn::token::Paren) {
+                let content;
+                syn::parenthesized!(content in input);
+                Some(Punctuated::parse_terminated(&content)?)
+            } else {
+                None
+            };
+
+            return Ok(DecoratorCall {
+                path: Either::Right(path_expr),
+                args,
+            });
+        }
+
         let path = input.parse()?;
         let args = if input.peek(syn::token::Paren) {
             let content;
@@ -22,7 +64,10 @@ impl Parse for DecoratorCall {
         } else {
             None
         };
-        Ok(DecoratorCall { path, args })
+        Ok(DecoratorCall {
+            path: Either::Left(path),
+            args,
+        })
     }
 }
 
@@ -248,14 +293,18 @@ pub fn decorate(attr: TokenStream, item: TokenStream) -> TokenStream {
     // Build nested decorator calls with arguments
     let mut decorated_body = quote! { #body };
     for decorator in decorator_list.decorators.iter().rev() {
-        let path = &decorator.path;
+        let decorator_expr = match &decorator.path {
+            Either::Left(path) => quote!(#path),
+            Either::Right(expr) => quote!(#expr),
+        };
+
         decorated_body = if let Some(args) = &decorator.args {
             quote! {
-                #path(#args, || #decorated_body)
+                #decorator_expr(#args, || #decorated_body)
             }
         } else {
             quote! {
-                #path(|| #decorated_body)
+                #decorator_expr(|| #decorated_body)
             }
         };
     }
