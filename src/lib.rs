@@ -2,7 +2,20 @@
 extern crate proc_macro;
 use proc_macro::TokenStream;
 use quote::quote;
-use syn::{spanned::Spanned, Error, ItemFn, Path};
+use syn::{parse::Parse, punctuated::Punctuated, spanned::Spanned, Error, ItemFn, Path, Token};
+
+// Add parser for comma-separated decorator paths
+struct DecoratorList {
+    decorators: Punctuated<Path, Token![,]>,
+}
+
+impl Parse for DecoratorList {
+    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        Ok(DecoratorList {
+            decorators: Punctuated::parse_terminated(input)?,
+        })
+    }
+}
 
 // Helper function to create decorated error messages
 fn create_error(span: proc_macro2::Span, message: &str, help: Option<&str>) -> Error {
@@ -13,28 +26,22 @@ fn create_error(span: proc_macro2::Span, message: &str, help: Option<&str>) -> E
     err
 }
 
-/// Decorates a function with a wrapper that provides additional functionality.
+/// Decorates a function with one or more wrappers that provide additional functionality.
 ///
 /// # Arguments
 ///
-/// * `decorator_path` - Path to the decorator function that will wrap the original function
+/// * `decorator_paths` - Comma-separated list of decorator function paths
 ///
-/// # Returns
+/// # Examples
 ///
-/// * `TokenStream` - The modified function implementation
-///
-/// # Example
-///
+/// Basic usage:
 /// ```rust
 /// use decorate_macro::decorate;
 ///
-/// fn log_execution<F, R>(f: F) -> R
-/// where
-///     F: FnOnce() -> R,
-/// {
-///     println!("Starting execution");
+/// fn log_execution<F, R>(f: F) -> R where F: FnOnce() -> R {
+///     println!("Starting");
 ///     let result = f();
-///     println!("Finished execution");
+///     println!("Ending");
 ///     result
 /// }
 ///
@@ -44,70 +51,66 @@ fn create_error(span: proc_macro2::Span, message: &str, help: Option<&str>) -> E
 /// }
 /// ```
 ///
-/// # Example with generics
-///
+/// Multiple decorators:
 /// ```rust
 /// use decorate_macro::decorate;
 ///
-/// fn log_execution<F, R>(f: F) -> R
-/// where
-///     F: FnOnce() -> R,
-/// {
-///     println!("Starting execution");
+/// fn validate<F, R>(f: F) -> R where F: FnOnce() -> R {
+///     println!("Validating...");
+///     f()
+/// }
+///
+/// fn log_result<F, R: std::fmt::Debug>(f: F) -> R where F: FnOnce() -> R {
 ///     let result = f();
-///     println!("Finished execution");
+///     println!("Result: {:?}", result);
 ///     result
 /// }
 ///
-/// #[decorate(log_execution)]
+/// #[decorate(validate, log_result)]
+/// fn multiply(x: i32, y: i32) -> i32 {
+///     x * y
+/// }
+/// ```
+///
+/// Generic functions:
+/// ```rust
+/// use decorate_macro::decorate;
+///
+/// fn trace<F, R: std::fmt::Debug>(f: F) -> R where F: FnOnce() -> R {
+///     println!("Entering function");
+///     let result = f();
+///     println!("Returning: {:?}", result);
+///     result
+/// }
+///
+/// #[decorate(trace)]
 /// fn identity<T: std::fmt::Debug>(x: T) -> T {
-///     println!("Value: {:?}", x);
 ///     x
 /// }
 /// ```
 #[proc_macro_attribute]
 pub fn decorate(attr: TokenStream, item: TokenStream) -> TokenStream {
-    // Parse decorator path with improved error message
-    let decorator_path = match syn::parse::<Path>(attr.clone()) {
-        Ok(path) => path,
-        Err(_) => {
-            return TokenStream::from(
+    // Parse the list of decorator paths
+    let decorator_list =
+        match syn::parse::<DecoratorList>(attr) {
+            Ok(list) if list.decorators.is_empty() => return TokenStream::from(
                 create_error(
                     proc_macro2::Span::call_site(),
-                    "Invalid decorator path",
-                    Some("Expected a function path, e.g., #[decorate(my_decorator)]"),
+                    "No decorator paths provided",
+                    Some(
+                        "Expected at least one decorator function, e.g., #[decorate(my_decorator)]",
+                    ),
                 )
                 .to_compile_error(),
-            )
-        }
-    };
+            ),
+            Ok(list) => list,
+            Err(e) => return TokenStream::from(e.to_compile_error()),
+        };
 
-    // Parse function with detailed error
-    let input_fn = match syn::parse::<ItemFn>(item.clone()) {
+    let input_fn = match syn::parse::<ItemFn>(item) {
         Ok(f) => f,
-        Err(_) => {
-            return TokenStream::from(
-                create_error(
-                    proc_macro2::Span::call_site(),
-                    "Invalid function definition",
-                    Some("The decorate attribute can only be applied to functions"),
-                )
-                .to_compile_error(),
-            )
-        }
+        Err(e) => return TokenStream::from(e.to_compile_error()),
     };
-
-    // Validate decorator path exists in scope
-    if decorator_path.segments.is_empty() {
-        return TokenStream::from(
-            create_error(
-                decorator_path.span(),
-                "Empty decorator path",
-                Some("Specify a valid decorator function name"),
-            )
-            .to_compile_error(),
-        );
-    }
 
     // Validate function signature
     if input_fn.sig.constness.is_some() {
@@ -125,10 +128,18 @@ pub fn decorate(attr: TokenStream, item: TokenStream) -> TokenStream {
     let sig = &input_fn.sig;
     let body = &input_fn.block;
 
+    // Build nested decorator calls
+    let mut decorated_body = quote! { #body };
+    for decorator in decorator_list.decorators.iter().rev() {
+        decorated_body = quote! {
+            #decorator(|| #decorated_body)
+        };
+    }
+
     // Generate the decorated function
     let output = quote! {
         #vis #sig {
-            #decorator_path(|| #body)
+            #decorated_body
         }
     };
 
