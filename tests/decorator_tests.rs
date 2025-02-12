@@ -66,3 +66,35 @@ fn test_generic_with_where_clause() {
     let value = bounded_fn(vec![1, 2, 3]);
     assert_eq!(value, vec![1, 2, 3]);
 }
+
+#[test]
+fn test_struct_method_decoration() {
+    struct TestStruct(i32);
+
+    impl TestStruct {
+        #[decorate(test_decorator)]
+        fn get_value(&self) -> i32 {
+            self.0
+        }
+    }
+
+    let test = TestStruct(42);
+    assert_eq!(test.get_value(), 42);
+}
+
+#[test]
+fn test_mut_method_decoration() {
+    struct TestStruct(i32);
+
+    impl TestStruct {
+        #[decorate(test_decorator)]
+        fn increment(&mut self) -> i32 {
+            self.0 += 1;
+            self.0
+        }
+    }
+
+    let mut test = TestStruct(0);
+    assert_eq!(test.increment(), 1);
+    assert_eq!(test.increment(), 2);
+}

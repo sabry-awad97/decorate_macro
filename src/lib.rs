@@ -134,6 +134,78 @@ fn create_error(span: proc_macro2::Span, message: &str, help: Option<&str>) -> E
 ///     42
 /// }
 /// ```
+///
+/// Using with struct methods:
+/// ```rust
+/// use decorate_macro::decorate;
+///
+/// fn log_access<F, R>(f: F) -> R
+/// where
+///     F: FnOnce() -> R,
+/// {
+///     println!("Accessing method");
+///     let result = f();
+///     println!("Access complete");
+///     result
+/// }
+///
+/// struct Counter {
+///     value: i32,
+/// }
+///
+/// impl Counter {
+///     #[decorate(log_access)]
+///     pub fn increment(&mut self) -> i32 {
+///         self.value += 1;
+///         self.value
+///     }
+///
+///     #[decorate(log_access)]
+///     pub fn get_value(&self) -> i32 {
+///         self.value
+///     }
+/// }
+/// ```
+///
+/// With multiple decorators on methods:
+/// ```rust
+/// use decorate_macro::decorate;
+/// use std::time::Instant;
+///
+/// fn validate_positive<F, R>(f: F) -> R
+/// where
+///     F: FnOnce() -> R,
+///     R: PartialOrd + Default,
+/// {
+///     let result = f();
+///     if result > R::default() {
+///         result
+///     } else {
+///         R::default()
+///     }
+/// }
+///
+/// fn measure_time<F, R>(f: F) -> R
+/// where
+///     F: FnOnce() -> R,
+/// {
+///     let start = Instant::now();
+///     let result = f();
+///     println!("Execution took: {:?}", start.elapsed());
+///     result
+/// }
+///
+/// struct Calculator {
+///     base: f64,
+/// }
+///
+/// impl Calculator {
+///     #[decorate(validate_positive, measure_time)]
+///     pub fn compute(&self, factor: f64) -> f64 {
+///         self.base * factor
+///     }
+/// }
+/// ```
 #[proc_macro_attribute]
 pub fn decorate(attr: TokenStream, item: TokenStream) -> TokenStream {
     // Parse the list of decorator calls

@@ -1,0 +1,5 @@
+error: expected `,`
+ --> tests/fail/invalid_instance_method.rs:8:20
+  |
+8 |     #[decorate(self.invalid..method)] // Invalid syntax
+  |                    ^
