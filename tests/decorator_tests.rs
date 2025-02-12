@@ -40,3 +40,29 @@ fn test_async_decoration() {
     // Note: We're not actually running the async function since
     // that would require a runtime, but we verify it compiles
 }
+
+#[test]
+fn test_generic_decoration() {
+    #[decorate(test_decorator)]
+    fn generic_fn<T: std::fmt::Display>(x: T) -> String {
+        format!("Value: {}", x)
+    }
+
+    assert_eq!(generic_fn(42), "Value: 42");
+    assert_eq!(generic_fn("hello"), "Value: hello");
+}
+
+#[test]
+fn test_generic_with_where_clause() {
+    #[decorate(test_decorator)]
+    fn bounded_fn<T>(x: T) -> T
+    where
+        T: std::fmt::Debug + Clone,
+    {
+        println!("Debug: {:?}", x);
+        x.clone()
+    }
+
+    let value = bounded_fn(vec![1, 2, 3]);
+    assert_eq!(value, vec![1, 2, 3]);
+}

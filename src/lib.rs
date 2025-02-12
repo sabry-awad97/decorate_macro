@@ -2,7 +2,7 @@
 extern crate proc_macro;
 use proc_macro::TokenStream;
 use quote::quote;
-use syn::{Error, ItemFn, Path};
+use syn::{ItemFn, Path};
 
 /// Decorates a function with a wrapper that provides additional functionality.
 ///
@@ -34,6 +34,28 @@ use syn::{Error, ItemFn, Path};
 ///     x + y
 /// }
 /// ```
+///
+/// # Example with generics
+///
+/// ```rust
+/// use decorate_macro::decorate;
+///
+/// fn log_execution<F, R>(f: F) -> R
+/// where
+///     F: FnOnce() -> R,
+/// {
+///     println!("Starting execution");
+///     let result = f();
+///     println!("Finished execution");
+///     result
+/// }
+///
+/// #[decorate(log_execution)]
+/// fn identity<T: std::fmt::Debug>(x: T) -> T {
+///     println!("Value: {:?}", x);
+///     x
+/// }
+/// ```
 #[proc_macro_attribute]
 pub fn decorate(attr: TokenStream, item: TokenStream) -> TokenStream {
     // Parse inputs or return error messages
@@ -47,22 +69,11 @@ pub fn decorate(attr: TokenStream, item: TokenStream) -> TokenStream {
         Err(e) => return TokenStream::from(e.to_compile_error()),
     };
 
-    // Validate function attributes
-    if !input_fn.sig.generics.params.is_empty() {
-        return TokenStream::from(
-            Error::new_spanned(
-                input_fn.sig.generics,
-                "Decorated functions cannot have generic parameters",
-            )
-            .to_compile_error(),
-        );
-    }
-
     let vis = &input_fn.vis;
     let sig = &input_fn.sig;
     let body = &input_fn.block;
 
-    // Generate the decorated function
+    // Generate the decorated function with generics support
     let output = quote! {
         #vis #sig {
             #decorator_path(|| #body)
