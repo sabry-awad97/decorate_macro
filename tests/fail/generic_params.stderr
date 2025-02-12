@@ -1,0 +1,5 @@
+error: Decorated functions cannot have generic parameters
+  --> tests/fail/generic_params.rs:11:20
+   |
+11 | fn generic_function<T>(x: T) -> T {
+   |                    ^^^
