@@ -24,8 +24,15 @@ fn parse_self_path(s: &str) -> syn::Result<syn::Expr> {
     Ok(expr)
 }
 
+// Define a configuration structure
+struct Config {
+    pre_code: Option<syn::Expr>,
+    post_code: Option<syn::Expr>,
+}
+
 // Parser for a single decorator with optional arguments
 struct DecoratorCall {
+    config: Option<Config>,
     path: Either<Path, syn::Expr>,
     args: Option<Punctuated<Expr, Token![,]>>,
 }
@@ -38,25 +45,37 @@ enum Either<A, B> {
 
 impl Parse for DecoratorCall {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
-        if input.peek(syn::LitStr) {
-            let path_str: syn::LitStr = input.parse()?;
-            let path_expr = parse_self_path(&path_str.value())?;
+        let mut config = Config {
+            pre_code: None,
+            post_code: None,
+        };
 
-            let args = if input.peek(syn::token::Paren) {
-                let content;
-                syn::parenthesized!(content in input);
-                Some(Punctuated::parse_terminated(&content)?)
-            } else {
-                None
-            };
+        // Parse config options if present
+        while input.peek(syn::Ident) && input.peek2(Token![=]) {
+            let key: syn::Ident = input.parse()?;
+            input.parse::<Token![=]>()?;
+            let value: syn::Expr = input.parse()?;
 
-            return Ok(DecoratorCall {
-                path: Either::Right(path_expr),
-                args,
-            });
+            match key.to_string().as_str() {
+                "pre" => config.pre_code = Some(value),
+                "post" => config.post_code = Some(value),
+                _ => return Err(Error::new(key.span(), "Unknown config option")),
+            }
+
+            if input.peek(Token![,]) {
+                input.parse::<Token![,]>()?;
+            }
         }
 
-        let path = input.parse()?;
+        // Parse decorator path or string
+        let path = if input.peek(syn::LitStr) {
+            let path_str: syn::LitStr = input.parse()?;
+            Either::Right(parse_self_path(&path_str.value())?)
+        } else {
+            Either::Left(input.parse()?)
+        };
+
+        // Parse optional arguments
         let args = if input.peek(syn::token::Paren) {
             let content;
             syn::parenthesized!(content in input);
@@ -64,8 +83,14 @@ impl Parse for DecoratorCall {
         } else {
             None
         };
+
         Ok(DecoratorCall {
-            path: Either::Left(path),
+            config: if config.pre_code.is_some() || config.post_code.is_some() {
+                Some(config)
+            } else {
+                None
+            },
+            path,
             args,
         })
     }
@@ -293,19 +318,38 @@ pub fn decorate(attr: TokenStream, item: TokenStream) -> TokenStream {
     // Build nested decorator calls with arguments
     let mut decorated_body = quote! { #body };
     for decorator in decorator_list.decorators.iter().rev() {
+        if let Some(config) = &decorator.config {
+            // Add pre-code
+            if let Some(pre) = &config.pre_code {
+                decorated_body = quote! {
+                    {
+                        #pre;
+                        #decorated_body
+                    }
+                };
+            }
+
+            // Add post-code
+            if let Some(post) = &config.post_code {
+                decorated_body = quote! {
+                    {
+                        let result = #decorated_body;
+                        #post;
+                        result
+                    }
+                };
+            }
+        }
+
         let decorator_expr = match &decorator.path {
             Either::Left(path) => quote!(#path),
             Either::Right(expr) => quote!(#expr),
         };
 
         decorated_body = if let Some(args) = &decorator.args {
-            quote! {
-                #decorator_expr(#args, || #decorated_body)
-            }
+            quote! { #decorator_expr(#args, || #decorated_body) }
         } else {
-            quote! {
-                #decorator_expr(|| #decorated_body)
-            }
+            quote! { #decorator_expr(|| #decorated_body) }
         };
     }
 

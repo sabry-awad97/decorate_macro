@@ -1,0 +1,5 @@
+error: expected identifier
+ --> tests/fail/invalid_meta.rs:3:12
+  |
+3 | #[decorate({invalid_option = "test"}, log_execution)]
+  |            ^
