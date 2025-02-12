@@ -1,0 +1,7 @@
+error: unexpected end of input, expected identifier
+ --> tests/fail/invalid_transform.rs:7:1
+  |
+7 | #[decorate(transform_params = wrong_params)]
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: this error originates in the attribute macro `decorate` (in Nightly builds, run with -Z macro-backtrace for more info)

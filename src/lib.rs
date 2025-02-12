@@ -28,6 +28,8 @@ fn parse_self_path(s: &str) -> syn::Result<syn::Expr> {
 struct Config {
     pre_code: Option<syn::Expr>,
     post_code: Option<syn::Expr>,
+    transform_params: Option<syn::Path>,
+    transform_result: Option<syn::Path>,
 }
 
 // Parser for a single decorator with optional arguments
@@ -48,17 +50,20 @@ impl Parse for DecoratorCall {
         let mut config = Config {
             pre_code: None,
             post_code: None,
+            transform_params: None,
+            transform_result: None,
         };
 
         // Parse config options if present
         while input.peek(syn::Ident) && input.peek2(Token![=]) {
             let key: syn::Ident = input.parse()?;
             input.parse::<Token![=]>()?;
-            let value: syn::Expr = input.parse()?;
 
             match key.to_string().as_str() {
-                "pre" => config.pre_code = Some(value),
-                "post" => config.post_code = Some(value),
+                "pre" => config.pre_code = Some(input.parse()?),
+                "post" => config.post_code = Some(input.parse()?),
+                "transform_params" => config.transform_params = Some(input.parse()?),
+                "transform_result" => config.transform_result = Some(input.parse()?),
                 _ => return Err(Error::new(key.span(), "Unknown config option")),
             }
 
@@ -85,7 +90,11 @@ impl Parse for DecoratorCall {
         };
 
         Ok(DecoratorCall {
-            config: if config.pre_code.is_some() || config.post_code.is_some() {
+            config: if config.pre_code.is_some()
+                || config.post_code.is_some()
+                || config.transform_params.is_some()
+                || config.transform_result.is_some()
+            {
                 Some(config)
             } else {
                 None
@@ -299,17 +308,19 @@ pub fn decorate(attr: TokenStream, item: TokenStream) -> TokenStream {
         Err(e) => return TokenStream::from(e.to_compile_error()),
     };
 
-    // Validate function signature
+    // Check for const functions first
     if input_fn.sig.constness.is_some() {
-        return TokenStream::from(
-            create_error(
-                input_fn.sig.constness.span(),
-                "Cannot decorate const functions",
-                Some("The decorate attribute cannot be used with const functions"),
-            )
-            .to_compile_error(),
-        );
+        let const_span = input_fn.sig.constness.span();
+        let mut error = Error::new(const_span, "Cannot decorate const functions");
+        error.combine(Error::new(
+            const_span,
+            "The decorate attribute cannot be used with const functions",
+        ));
+        return TokenStream::from(error.to_compile_error());
     }
+
+    // Remove the validation check since we handle parameter transformation
+    // directly in the code generation phase
 
     let vis = &input_fn.vis;
     let sig = &input_fn.sig;
@@ -319,6 +330,34 @@ pub fn decorate(attr: TokenStream, item: TokenStream) -> TokenStream {
     let mut decorated_body = quote! { #body };
     for decorator in decorator_list.decorators.iter().rev() {
         if let Some(config) = &decorator.config {
+            // Add parameter transformation
+            if let Some(transform) = &config.transform_params {
+                let param_names: Vec<_> = input_fn
+                    .sig
+                    .inputs
+                    .iter()
+                    .filter_map(|arg| match arg {
+                        syn::FnArg::Typed(pat_type) => {
+                            if let syn::Pat::Ident(pat_ident) = &*pat_type.pat {
+                                Some(&pat_ident.ident)
+                            } else {
+                                None
+                            }
+                        }
+                        _ => None,
+                    })
+                    .collect();
+
+                if !param_names.is_empty() {
+                    decorated_body = quote! {
+                        {
+                            let (#(#param_names),*) = #transform(#(#param_names),*);
+                            #decorated_body
+                        }
+                    };
+                }
+            }
+
             // Add pre-code
             if let Some(pre) = &config.pre_code {
                 decorated_body = quote! {
@@ -336,6 +375,16 @@ pub fn decorate(attr: TokenStream, item: TokenStream) -> TokenStream {
                         let result = #decorated_body;
                         #post;
                         result
+                    }
+                };
+            }
+
+            // Add result transformation
+            if let Some(transform) = &config.transform_result {
+                decorated_body = quote! {
+                    {
+                        let result = #decorated_body;
+                        #transform(result)
                     }
                 };
             }
