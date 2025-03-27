@@ -1,22 +1,30 @@
 [package]
 name = "decorate_macro"
-version = "0.1.0"
-edition = "2021"
-authors = ["Your Name <your.email@example.com>"]
-description = "A procedural macro for function decoration in Rust"
+version = "0.1.1"
+edition = "2024"
+authors = [
+    "Rustaceans <rustaceans@example.com>",
+    "Your Name <your.email@example.com>",
+]
+description = "A powerful and flexible procedural macro for Rust that enables Python-style function decoration with advanced features like parameter transformation, result transformation, and execution hooks."
 license = "MIT"
 
 [lib]
 proc-macro = true
 
+[[bin]]
+name = "decorate_example" # Changed from decorate_macro to decorate_example
+path = "src/main.rs"
+
 [dependencies]
-syn = { version = "2.0", features = ["full"] }
-quote = "1.0"
-proc-macro2 = "1.0"
-log = "0.4"
-env_logger = "0.11.6"
+syn = { version = "2.0.100", features = ["full"] }
+quote = "1.0.40"
+proc-macro2 = "1.0.94"
 
 [dev-dependencies]
-trybuild = "1.0"
-proc-macro2 = "1.0"
-tokio = { version = "1", features = ["full", "rt", "macros"] }
+rand = "0.9.0"
+serde = { version = "1.0.219", features = ["derive"] }
+tokio = { version = "1.44.1", features = ["full"] }
+tracing = "0.1.41"
+tracing-subscriber = "0.3.19"
+trybuild = "1.0.104"

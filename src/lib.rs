@@ -1,8 +1,8 @@
 extern crate proc_macro;
 use proc_macro::TokenStream;
-use quote::{quote, ToTokens};
+use quote::{ToTokens, quote};
 use syn::{
-    parse::Parse, punctuated::Punctuated, spanned::Spanned, Error, Expr, ItemFn, Path, Token,
+    Error, Expr, ItemFn, Path, Token, parse::Parse, punctuated::Punctuated, spanned::Spanned,
 };
 
 // Parser for self path from string literal
@@ -296,7 +296,7 @@ pub fn decorate(attr: TokenStream, item: TokenStream) -> TokenStream {
                     Some("Expected at least one decorator function"),
                 )
                 .to_compile_error(),
-            )
+            );
         }
         Ok(list) => list,
         Err(e) => return TokenStream::from(e.to_compile_error()),
@@ -330,13 +330,6 @@ pub fn decorate(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     // Build nested decorator calls with arguments
     let mut decorated_body = quote! { #body };
-
-    // If the function is async, we need to box the future
-    if is_async {
-        decorated_body = quote! {
-            Box::pin(async move { #decorated_body })
-        };
-    }
 
     for decorator in decorator_list.decorators.iter().rev() {
         if let Some(config) = &decorator.config {
@@ -407,9 +400,13 @@ pub fn decorate(attr: TokenStream, item: TokenStream) -> TokenStream {
 
         decorated_body = if is_async {
             if let Some(args) = &decorator.args {
-                quote! { #decorator_expr(#args, || #decorated_body).await }
+                quote! {
+                    #decorator_expr(#args, || async { #decorated_body })
+                }
             } else {
-                quote! { #decorator_expr(|| #decorated_body).await }
+                quote! {
+                    #decorator_expr(|| async { #decorated_body })
+                }
             }
         } else if let Some(args) = &decorator.args {
             quote! { #decorator_expr(#args, || #decorated_body) }
@@ -424,7 +421,7 @@ pub fn decorate(attr: TokenStream, item: TokenStream) -> TokenStream {
                 use std::future::Future;
                 use std::pin::Pin;
                 use std::boxed::Box;
-                #decorated_body
+                #decorated_body.await
             }
         }
     } else {
