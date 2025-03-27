@@ -158,6 +158,43 @@ where
     );
 }
 
+// Type alias for validation rule
+type ValidationRule = (&'static dyn Fn(&str) -> bool, &'static str);
+
+fn validate_product_id<F, R>(id: &str, f: F) -> Result<R, String>
+where
+    F: FnOnce() -> Result<R, String>,
+{
+    // Define validation rules with descriptive error messages
+    let validation_rules: Vec<ValidationRule> = vec![
+        (
+            &|id: &str| !id.trim().is_empty(),
+            "Product ID cannot be empty",
+        ),
+        (
+            &|id: &str| id.len() <= 50,
+            "Product ID too long (max 50 characters)",
+        ),
+        (
+            &|id: &str| {
+                id.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+            },
+            "Product ID contains invalid characters (only alphanumeric, '-' and '_' allowed)",
+        ),
+    ];
+
+    // Apply all validation rules
+    for (validator, error_msg) in validation_rules {
+        if !validator(id) {
+            return Err(error_msg.to_string());
+        }
+    }
+
+    // If all validations pass, execute the wrapped function
+    f()
+}
+
 // Mock database with more graceful error handling
 #[decorate(measure_time)]
 fn get_mock_product(id: &str) -> Option<Product> {
@@ -191,12 +228,13 @@ fn get_mock_product(id: &str) -> Option<Product> {
     product
 }
 
-// Main scraping function with all decorators
+// Main scraping function with all decorators including validate_product_id
 #[decorate(
     measure_time,
     safe_decorator,
     with_cache(Duration::from_secs(300), id),
-    rate_limit(1000)
+    rate_limit(1000),
+    validate_product_id(id)
 )]
 fn fetch_product(id: &str) -> Result<Product, String> {
     info!("Fetching product with ID: {}", id);
@@ -204,12 +242,12 @@ fn fetch_product(id: &str) -> Result<Product, String> {
 }
 
 // Batch fetching with retry, safety mechanisms, and timing
-#[decorate(measure_time, safe_decorator)] // Remove with_retry from here
+#[decorate(measure_time, safe_decorator)]
 fn fetch_products(ids: &[&str]) -> Vec<Result<Product, String>> {
     info!("Batch fetching {} products", ids.len());
     ids.iter()
-        .map(|id| {
-            // Apply retry at the individual product level
+        .map(|&id| {
+            // Modified to properly pass the id parameter
             with_retry(3, || fetch_product(id))
         })
         .collect()
@@ -227,28 +265,23 @@ fn main() {
         .with_level(true) // Show log levels
         .init();
 
-    let product_ids = vec!["123", "456", "789"];
-
     println!("\n📦 Starting product fetch operation\n");
 
+    // Test with valid and invalid IDs
+    let product_ids = vec![
+        "123",
+        "",
+        "abc-123",
+        "invalid@id",
+        "very-very-very-long-product-id-that-exceeds-fifty-characters",
+    ];
     let results = fetch_products(&product_ids);
+
     println!("\n=== Results ===");
-    for (id, result) in product_ids.iter().zip(results) {
+    for (_id, result) in product_ids.iter().zip(results) {
         match result {
-            Ok(product) => println!("✅ Product {}: {:?}", id, product),
-            Err(e) => println!("❌ Product {}: {}", id, e),
+            Ok(product) => println!("✅ Found product: {:?}", product),
+            Err(e) => println!("❌ Error: {}", e),
         }
     }
-
-    println!("\n🔄 Testing cache functionality\n");
-
-    let cached_results = fetch_products(&product_ids);
-    println!("\n=== Cached Results ===");
-    for (id, result) in product_ids.iter().zip(cached_results) {
-        match result {
-            Ok(product) => println!("✅ Product {}: {:?}", id, product),
-            Err(e) => println!("❌ Product {}: {}", id, e),
-        }
-    }
-    println!();
 }

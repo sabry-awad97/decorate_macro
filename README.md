@@ -22,7 +22,7 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-decorate_macro = "0.1.0"
+decorate_macro = { git = "https://github.com/sabry-awad97/decorate_macro.git" }
 ```
 
 ## Quick Start

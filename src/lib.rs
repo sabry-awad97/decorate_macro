@@ -1,4 +1,5 @@
 extern crate proc_macro;
+use either::Either;
 use proc_macro::TokenStream;
 use quote::{ToTokens, quote};
 use syn::{
@@ -36,12 +37,6 @@ struct DecoratorCall {
     config: Option<Config>,
     path: Either<Path, syn::Expr>,
     args: Option<Punctuated<Expr, Token![,]>>,
-}
-
-// Update Either enum
-enum Either<A, B> {
-    Left(A),
-    Right(B),
 }
 
 impl Parse for DecoratorCall {
