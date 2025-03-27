@@ -25,7 +25,7 @@ fn check_stderr_files() {
     // Check that each .rs file has a corresponding .stderr file
     for entry in std::fs::read_dir(fail_dir).unwrap() {
         let path = entry.unwrap().path();
-        if path.extension().map_or(false, |ext| ext == "rs") {
+        if path.extension().is_some_and(|ext| ext == "rs") {
             let stderr_path = path.with_extension("stderr");
             assert!(stderr_path.exists(), "Missing .stderr file for {:?}", path);
         }

@@ -1,4 +1,3 @@
-// src/lib.rs
 extern crate proc_macro;
 use proc_macro::TokenStream;
 use quote::{quote, ToTokens};
@@ -319,6 +318,9 @@ pub fn decorate(attr: TokenStream, item: TokenStream) -> TokenStream {
         return TokenStream::from(error.to_compile_error());
     }
 
+    // Check if the function is async
+    let is_async = input_fn.sig.asyncness.is_some();
+
     // Remove the validation check since we handle parameter transformation
     // directly in the code generation phase
 
@@ -328,6 +330,14 @@ pub fn decorate(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     // Build nested decorator calls with arguments
     let mut decorated_body = quote! { #body };
+
+    // If the function is async, we need to box the future
+    if is_async {
+        decorated_body = quote! {
+            Box::pin(async move { #decorated_body })
+        };
+    }
+
     for decorator in decorator_list.decorators.iter().rev() {
         if let Some(config) = &decorator.config {
             // Add parameter transformation
@@ -395,16 +405,33 @@ pub fn decorate(attr: TokenStream, item: TokenStream) -> TokenStream {
             Either::Right(expr) => quote!(#expr),
         };
 
-        decorated_body = if let Some(args) = &decorator.args {
+        decorated_body = if is_async {
+            if let Some(args) = &decorator.args {
+                quote! { #decorator_expr(#args, || #decorated_body).await }
+            } else {
+                quote! { #decorator_expr(|| #decorated_body).await }
+            }
+        } else if let Some(args) = &decorator.args {
             quote! { #decorator_expr(#args, || #decorated_body) }
         } else {
             quote! { #decorator_expr(|| #decorated_body) }
         };
     }
 
-    let output = quote! {
-        #vis #sig {
-            #decorated_body
+    let output = if is_async {
+        quote! {
+            #vis #sig {
+                use std::future::Future;
+                use std::pin::Pin;
+                use std::boxed::Box;
+                #decorated_body
+            }
+        }
+    } else {
+        quote! {
+            #vis #sig {
+                #decorated_body
+            }
         }
     };
 
