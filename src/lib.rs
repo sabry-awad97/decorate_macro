@@ -8,13 +8,24 @@
 //!
 //! Decorators must follow specific signatures to work correctly:
 //!
-//! ## Basic Decorator (no arguments)
+//! ## Sync Decorator (for sync functions)
 //! ```rust,ignore
 //! fn decorator<F, R>(f: F) -> R
 //! where
 //!     F: FnOnce() -> R,
 //! {
 //!     f()
+//! }
+//! ```
+//!
+//! ## Async Decorator (for async functions)
+//! ```rust,ignore
+//! fn async_decorator<F, Fut, R>(f: F) -> impl Future<Output = R>
+//! where
+//!     F: FnOnce() -> Fut,
+//!     Fut: Future<Output = R>,
+//! {
+//!     async move { f().await }
 //! }
 //! ```
 //!
@@ -247,44 +258,24 @@ fn extract_param_names(inputs: &Punctuated<FnArg, Token![,]>) -> Vec<&Ident> {
 /// 2. For self-paths (method calls): calls directly since methods can't be assigned to variables
 /// 3. Uses explicit closure typing to catch signature mismatches early
 /// 4. Preserves span information for accurate error locations
+///
+/// For sync functions: decorators receive `|| { body }` returning `R`
+/// For async functions: decorators receive `|| async { body }` returning `impl Future<Output = R>`
 fn generate_validated_decorator_call(
     decorator_expr: &proc_macro2::TokenStream,
     args: &Option<Punctuated<Expr, Token![,]>>,
     body: proc_macro2::TokenStream,
-    is_async: bool,
     is_self_path: bool,
     span: Span,
 ) -> proc_macro2::TokenStream {
     // For self-paths (method references), we must call directly without intermediate assignment
     // because you can't assign a method to a variable in Rust
     if is_self_path {
-        return generate_direct_decorator_call(decorator_expr, args, body, is_async, span);
+        return generate_direct_decorator_call(decorator_expr, args, body, span);
     }
 
     // For regular paths, use intermediate variables for better error messages
-    if is_async {
-        if let Some(args) = args {
-            quote_spanned! {span=>
-                {
-                    // Async decorator with arguments
-                    // Expected: fn(args..., impl FnOnce() -> impl Future<Output=R>) -> impl Future<Output=R>
-                    let __decorate_fn = #decorator_expr;
-                    let __decorate_closure = || async { #body };
-                    __decorate_fn(#args, __decorate_closure)
-                }
-            }
-        } else {
-            quote_spanned! {span=>
-                {
-                    // Async decorator
-                    // Expected: fn(impl FnOnce() -> impl Future<Output=R>) -> impl Future<Output=R>
-                    let __decorate_fn = #decorator_expr;
-                    let __decorate_closure = || async { #body };
-                    __decorate_fn(__decorate_closure)
-                }
-            }
-        }
-    } else if let Some(args) = args {
+    if let Some(args) = args {
         quote_spanned! {span=>
             {
                 // Decorator with arguments
@@ -313,20 +304,9 @@ fn generate_direct_decorator_call(
     decorator_expr: &proc_macro2::TokenStream,
     args: &Option<Punctuated<Expr, Token![,]>>,
     body: proc_macro2::TokenStream,
-    is_async: bool,
     span: Span,
 ) -> proc_macro2::TokenStream {
-    if is_async {
-        if let Some(args) = args {
-            quote_spanned! {span=>
-                #decorator_expr(#args, || async { #body })
-            }
-        } else {
-            quote_spanned! {span=>
-                #decorator_expr(|| async { #body })
-            }
-        }
-    } else if let Some(args) = args {
+    if let Some(args) = args {
         quote_spanned! {span=>
             #decorator_expr(#args, || #body)
         }
@@ -343,7 +323,13 @@ fn generate_decorated_body(
     fn_inputs: &Punctuated<FnArg, Token![,]>,
     is_async: bool,
 ) -> proc_macro2::TokenStream {
-    let mut decorated_body = quote! { #original_body };
+    // For async functions, we wrap the body in an async block so .await is valid
+    // The outermost decorator receives `|| async { body }` and must .await it
+    let mut decorated_body = if is_async {
+        quote! { async #original_body }
+    } else {
+        quote! { #original_body }
+    };
 
     for decorator in decorators.iter().rev() {
         if let Some(config) = &decorator.config {
@@ -359,10 +345,14 @@ fn generate_decorated_body(
             &decorator_expr,
             &decorator.args,
             decorated_body,
-            is_async,
             is_self_path,
             decorator.path_span,
         );
+    }
+
+    // For async functions, the decorated body returns a Future, so we need to .await it
+    if is_async {
+        decorated_body = quote! { #decorated_body.await };
     }
 
     decorated_body
@@ -632,28 +622,22 @@ pub fn decorate(attr: TokenStream, item: TokenStream) -> TokenStream {
         .into();
     }
 
-    let is_async = input_fn.sig.asyncness.is_some();
     let vis = &input_fn.vis;
     let sig = &input_fn.sig;
     let body = &input_fn.block;
     let attrs = &input_fn.attrs;
 
+    let is_async = sig.asyncness.is_some();
     let decorated_body =
         generate_decorated_body(&decorator_list.decorators, body, &sig.inputs, is_async);
 
-    let output = if is_async {
-        quote_spanned! {sig.span()=>
-            #(#attrs)*
-            #vis #sig {
-                #decorated_body.await
-            }
-        }
-    } else {
-        quote_spanned! {sig.span()=>
-            #(#attrs)*
-            #vis #sig {
-                #decorated_body
-            }
+    // Generate the output - same for sync and async functions
+    // For async functions, the body can contain .await expressions
+    // which are valid because the function signature is async
+    let output = quote_spanned! {sig.span()=>
+        #(#attrs)*
+        #vis #sig {
+            #decorated_body
         }
     };
 
