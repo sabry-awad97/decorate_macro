@@ -1,7 +1,5 @@
 error: expected expression, found `,`
-  --> tests/fail/invalid_args.rs:10:1
+  --> tests/fail/invalid_args.rs:10:12
    |
 10 | #[decorate(test_decorator(invalid,))]
-   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected expression
-   |
-   = note: this error originates in the attribute macro `decorate` (in Nightly builds, run with -Z macro-backtrace for more info)
+   |            ^^^^^^^^^^^^^^ expected expression

@@ -3,6 +3,33 @@
 //! This crate provides the `#[decorate]` attribute macro that allows wrapping
 //! functions with decorator functions, supporting features like parameter
 //! transformation, result transformation, and pre/post execution hooks.
+//!
+//! # Decorator Signature Requirements
+//!
+//! Decorators must follow specific signatures to work correctly:
+//!
+//! ## Basic Decorator (no arguments)
+//! ```rust,ignore
+//! fn decorator<F, R>(f: F) -> R
+//! where
+//!     F: FnOnce() -> R,
+//! {
+//!     f()
+//! }
+//! ```
+//!
+//! ## Decorator with Arguments
+//! ```rust,ignore
+//! fn decorator_with_args<F, R>(arg1: Type1, arg2: Type2, f: F) -> R
+//! where
+//!     F: FnOnce() -> R,
+//! {
+//!     f()
+//! }
+//! ```
+//!
+//! The macro validates decorator signatures at compile time and provides
+//! clear error messages when signatures don't match.
 
 extern crate proc_macro;
 
@@ -35,24 +62,15 @@ mod error_messages {
 // Configuration for decorator behavior
 // ============================================================================
 
-/// Configuration options that modify how a decorator is applied.
-///
-/// These options allow fine-grained control over the decoration process,
-/// including parameter/result transformation and execution hooks.
 #[derive(Default)]
 struct DecoratorConfig {
-    /// Code to execute before the decorated function body.
     pre_code: Option<Expr>,
-    /// Code to execute after the decorated function body.
     post_code: Option<Expr>,
-    /// Function to transform parameters before execution.
     transform_params: Option<Path>,
-    /// Function to transform the result after execution.
     transform_result: Option<Path>,
 }
 
 impl DecoratorConfig {
-    /// Returns `true` if any configuration option is set.
     #[inline]
     fn has_any(&self) -> bool {
         self.pre_code.is_some()
@@ -66,19 +84,10 @@ impl DecoratorConfig {
 // Decorator Call Parser
 // ============================================================================
 
-/// Represents a single decorator invocation with optional configuration and arguments.
-///
-/// A decorator call can be:
-/// - A simple path: `my_decorator`
-/// - A path with arguments: `my_decorator(arg1, arg2)`
-/// - A string path for self references: `"self.field.decorator"`
-/// - Any of the above with configuration: `transform_params = foo, my_decorator`
 struct DecoratorCall {
-    /// Optional configuration for this decorator.
     config: Option<DecoratorConfig>,
-    /// The decorator path - either a regular path or a self-referencing expression.
     path: Either<Path, Expr>,
-    /// Optional arguments to pass to the decorator.
+    path_span: Span,
     args: Option<Punctuated<Expr, Token![,]>>,
 }
 
@@ -86,7 +95,6 @@ impl Parse for DecoratorCall {
     fn parse(input: syn::parse::ParseStream) -> Result<Self> {
         let mut config = DecoratorConfig::default();
 
-        // Parse configuration options (key = value pairs)
         while input.peek(Ident) && input.peek2(Token![=]) {
             let key: Ident = input.parse()?;
             let key_span = key.span();
@@ -106,21 +114,24 @@ impl Parse for DecoratorCall {
                 }
             }
 
-            // Consume optional trailing comma
             if input.peek(Token![,]) {
                 input.parse::<Token![,]>()?;
             }
         }
 
-        // Parse decorator path (either string literal for self-paths or regular path)
-        let path = if input.peek(syn::LitStr) {
+        let (path, path_span) = if input.peek(syn::LitStr) {
             let path_str: syn::LitStr = input.parse()?;
-            Either::Right(parse_self_path(&path_str.value(), path_str.span())?)
+            let span = path_str.span();
+            (
+                Either::Right(parse_self_path(&path_str.value(), span)?),
+                span,
+            )
         } else {
-            Either::Left(input.parse()?)
+            let path: Path = input.parse()?;
+            let span = path.span();
+            (Either::Left(path), span)
         };
 
-        // Parse optional arguments in parentheses
         let args = if input.peek(syn::token::Paren) {
             let content;
             syn::parenthesized!(content in input);
@@ -132,6 +143,7 @@ impl Parse for DecoratorCall {
         Ok(DecoratorCall {
             config: if config.has_any() { Some(config) } else { None },
             path,
+            path_span,
             args,
         })
     }
@@ -141,7 +153,6 @@ impl Parse for DecoratorCall {
 // Decorator List Parser
 // ============================================================================
 
-/// A comma-separated list of decorator calls.
 struct DecoratorList {
     decorators: Punctuated<DecoratorCall, Token![,]>,
 }
@@ -158,49 +169,27 @@ impl Parse for DecoratorList {
 // Helper Functions
 // ============================================================================
 
-/// Creates an error with an additional help message.
 fn create_error_with_help(span: Span, message: &str, help: &str) -> Error {
     let mut err = Error::new(span, message);
     err.combine(Error::new(span, format!("help: {}", help)));
     err
 }
 
-/// Validates that a string is a valid Rust identifier.
 fn is_valid_identifier(s: &str) -> bool {
     if s.is_empty() {
         return false;
     }
-
     let mut chars = s.chars();
-
-    // First character must be alphabetic or underscore
     match chars.next() {
         Some(c) if c.is_alphabetic() || c == '_' => {}
         _ => return false,
     }
-
-    // Remaining characters must be alphanumeric or underscore
     chars.all(|c| c.is_alphanumeric() || c == '_')
 }
 
-/// Parses a self-referencing path string into an expression.
-///
-/// # Arguments
-/// * `s` - The path string, e.g., "self.field.method"
-/// * `span` - The span to use for error reporting
-///
-/// # Returns
-/// A `syn::Expr` representing the parsed path.
-///
-/// # Errors
-/// Returns an error if:
-/// - The path doesn't start with "self"
-/// - The path contains empty segments
-/// - Any segment is not a valid identifier
 fn parse_self_path(s: &str, span: Span) -> Result<Expr> {
     let segments: Vec<&str> = s.split('.').collect();
 
-    // Validate path starts with "self"
     if segments.is_empty() || segments[0] != "self" {
         return Err(Error::new(
             span,
@@ -208,12 +197,10 @@ fn parse_self_path(s: &str, span: Span) -> Result<Expr> {
         ));
     }
 
-    // Validate all segments are non-empty and valid identifiers
     for (i, segment) in segments.iter().enumerate() {
         if segment.is_empty() {
             return Err(Error::new(span, error_messages::SELF_PATH_EMPTY_SEGMENT));
         }
-        // Skip "self" validation as it's a keyword
         if i > 0 && !is_valid_identifier(segment) {
             return Err(Error::new(
                 span,
@@ -226,7 +213,6 @@ fn parse_self_path(s: &str, span: Span) -> Result<Expr> {
         }
     }
 
-    // Build the expression using syn's AST directly (safer than string parsing)
     let self_ident = Ident::new("self", span);
     let mut expr: Expr = syn::parse_quote_spanned!(span=> #self_ident);
 
@@ -238,10 +224,6 @@ fn parse_self_path(s: &str, span: Span) -> Result<Expr> {
     Ok(expr)
 }
 
-/// Extracts parameter names from function arguments.
-///
-/// Only extracts simple identifier patterns; complex patterns (tuples, etc.)
-/// are skipped with a warning in the generated code.
 fn extract_param_names(inputs: &Punctuated<FnArg, Token![,]>) -> Vec<&Ident> {
     inputs
         .iter()
@@ -250,16 +232,111 @@ fn extract_param_names(inputs: &Punctuated<FnArg, Token![,]>) -> Vec<&Ident> {
                 if let Pat::Ident(pat_ident) = &*pat_type.pat {
                     Some(&pat_ident.ident)
                 } else {
-                    // Complex patterns (tuples, etc.) are not supported for transformation
                     None
                 }
             }
-            FnArg::Receiver(_) => None, // Skip self parameters
+            FnArg::Receiver(_) => None,
         })
         .collect()
 }
 
-/// Generates the decorated function body by applying all decorators in reverse order.
+/// Generates a validated decorator call with clear error messages.
+///
+/// This wraps the decorator invocation in a way that:
+/// 1. For regular paths: assigns the decorator to a local variable to isolate type errors
+/// 2. For self-paths (method calls): calls directly since methods can't be assigned to variables
+/// 3. Uses explicit closure typing to catch signature mismatches early
+/// 4. Preserves span information for accurate error locations
+fn generate_validated_decorator_call(
+    decorator_expr: &proc_macro2::TokenStream,
+    args: &Option<Punctuated<Expr, Token![,]>>,
+    body: proc_macro2::TokenStream,
+    is_async: bool,
+    is_self_path: bool,
+    span: Span,
+) -> proc_macro2::TokenStream {
+    // For self-paths (method references), we must call directly without intermediate assignment
+    // because you can't assign a method to a variable in Rust
+    if is_self_path {
+        return generate_direct_decorator_call(decorator_expr, args, body, is_async, span);
+    }
+
+    // For regular paths, use intermediate variables for better error messages
+    if is_async {
+        if let Some(args) = args {
+            quote_spanned! {span=>
+                {
+                    // Async decorator with arguments
+                    // Expected: fn(args..., impl FnOnce() -> impl Future<Output=R>) -> impl Future<Output=R>
+                    let __decorate_fn = #decorator_expr;
+                    let __decorate_closure = || async { #body };
+                    __decorate_fn(#args, __decorate_closure)
+                }
+            }
+        } else {
+            quote_spanned! {span=>
+                {
+                    // Async decorator
+                    // Expected: fn(impl FnOnce() -> impl Future<Output=R>) -> impl Future<Output=R>
+                    let __decorate_fn = #decorator_expr;
+                    let __decorate_closure = || async { #body };
+                    __decorate_fn(__decorate_closure)
+                }
+            }
+        }
+    } else if let Some(args) = args {
+        quote_spanned! {span=>
+            {
+                // Decorator with arguments
+                // Expected: fn(args..., impl FnOnce() -> R) -> R
+                let __decorate_fn = #decorator_expr;
+                let __decorate_closure = || #body;
+                __decorate_fn(#args, __decorate_closure)
+            }
+        }
+    } else {
+        quote_spanned! {span=>
+            {
+                // Decorator without arguments
+                // Expected: fn(impl FnOnce() -> R) -> R
+                let __decorate_fn = #decorator_expr;
+                let __decorate_closure = || #body;
+                __decorate_fn(__decorate_closure)
+            }
+        }
+    }
+}
+
+/// Generates a direct decorator call without intermediate variable assignment.
+/// Used for self-path decorators (method references) which can't be assigned to variables.
+fn generate_direct_decorator_call(
+    decorator_expr: &proc_macro2::TokenStream,
+    args: &Option<Punctuated<Expr, Token![,]>>,
+    body: proc_macro2::TokenStream,
+    is_async: bool,
+    span: Span,
+) -> proc_macro2::TokenStream {
+    if is_async {
+        if let Some(args) = args {
+            quote_spanned! {span=>
+                #decorator_expr(#args, || async { #body })
+            }
+        } else {
+            quote_spanned! {span=>
+                #decorator_expr(|| async { #body })
+            }
+        }
+    } else if let Some(args) = args {
+        quote_spanned! {span=>
+            #decorator_expr(#args, || #body)
+        }
+    } else {
+        quote_spanned! {span=>
+            #decorator_expr(|| #body)
+        }
+    }
+}
+
 fn generate_decorated_body(
     decorators: &Punctuated<DecoratorCall, Token![,]>,
     original_body: &syn::Block,
@@ -268,33 +345,34 @@ fn generate_decorated_body(
 ) -> proc_macro2::TokenStream {
     let mut decorated_body = quote! { #original_body };
 
-    // Apply decorators in reverse order (innermost first)
     for decorator in decorators.iter().rev() {
-        // Apply configuration transformations
         if let Some(config) = &decorator.config {
             decorated_body = apply_config_transformations(config, decorated_body, fn_inputs);
         }
 
-        // Wrap with decorator call
-        let decorator_expr = match &decorator.path {
-            Either::Left(path) => quote!(#path),
-            Either::Right(expr) => quote!(#expr),
+        let (decorator_expr, is_self_path) = match &decorator.path {
+            Either::Left(path) => (quote!(#path), false),
+            Either::Right(expr) => (quote!(#expr), true),
         };
 
-        decorated_body =
-            generate_decorator_wrapper(&decorator_expr, &decorator.args, decorated_body, is_async);
+        decorated_body = generate_validated_decorator_call(
+            &decorator_expr,
+            &decorator.args,
+            decorated_body,
+            is_async,
+            is_self_path,
+            decorator.path_span,
+        );
     }
 
     decorated_body
 }
 
-/// Applies configuration transformations (pre/post code, param/result transforms).
 fn apply_config_transformations(
     config: &DecoratorConfig,
     mut body: proc_macro2::TokenStream,
     fn_inputs: &Punctuated<FnArg, Token![,]>,
 ) -> proc_macro2::TokenStream {
-    // Apply parameter transformation
     if let Some(transform) = &config.transform_params {
         let param_names = extract_param_names(fn_inputs);
         if !param_names.is_empty() {
@@ -307,7 +385,6 @@ fn apply_config_transformations(
         }
     }
 
-    // Apply pre-execution code
     if let Some(pre) = &config.pre_code {
         body = quote! {
             {
@@ -317,7 +394,6 @@ fn apply_config_transformations(
         };
     }
 
-    // Apply post-execution code
     if let Some(post) = &config.post_code {
         body = quote! {
             {
@@ -328,7 +404,6 @@ fn apply_config_transformations(
         };
     }
 
-    // Apply result transformation
     if let Some(transform) = &config.transform_result {
         body = quote! {
             {
@@ -341,43 +416,35 @@ fn apply_config_transformations(
     body
 }
 
-/// Generates the decorator wrapper call.
-fn generate_decorator_wrapper(
-    decorator_expr: &proc_macro2::TokenStream,
-    args: &Option<Punctuated<Expr, Token![,]>>,
-    body: proc_macro2::TokenStream,
-    is_async: bool,
-) -> proc_macro2::TokenStream {
-    if is_async {
-        if let Some(args) = args {
-            quote! {
-                #decorator_expr(#args, || async { #body })
-            }
-        } else {
-            quote! {
-                #decorator_expr(|| async { #body })
-            }
-        }
-    } else if let Some(args) = args {
-        quote! {
-            #decorator_expr(#args, || #body)
-        }
-    } else {
-        quote! {
-            #decorator_expr(|| #body)
-        }
-    }
-}
-
 // ============================================================================
 // Main Macro Implementation
 // ============================================================================
 
 /// Decorates a function with one or more wrappers that provide additional functionality.
 ///
-/// # Arguments
+/// # Decorator Signature Requirements
 ///
-/// * `decorator_paths` - Comma-separated list of decorator function paths
+/// ## Basic Decorator
+/// ```rust,ignore
+/// fn my_decorator<F, R>(f: F) -> R
+/// where
+///     F: FnOnce() -> R,
+/// {
+///     let result = f();
+///     result
+/// }
+/// ```
+///
+/// ## Decorator with Arguments
+/// Arguments come before the closure parameter:
+/// ```rust,ignore
+/// fn with_retry<F, R>(attempts: u32, f: F) -> R
+/// where
+///     F: FnOnce() -> R,
+/// {
+///     f()
+/// }
+/// ```
 ///
 /// # Configuration Options
 ///
@@ -449,7 +516,7 @@ fn generate_decorator_wrapper(
 ///
 /// fn with_retry<F, R>(attempts: u32, f: F) -> R
 /// where
-///     F: Fn() -> R,  // Changed from FnOnce to Fn
+///     F: Fn() -> R,
 /// {
 ///     let mut last_error = None;
 ///     for _ in 0..attempts {
@@ -540,7 +607,6 @@ fn generate_decorator_wrapper(
 /// ```
 #[proc_macro_attribute]
 pub fn decorate(attr: TokenStream, item: TokenStream) -> TokenStream {
-    // Parse the decorator list
     let decorator_list = match syn::parse::<DecoratorList>(attr) {
         Ok(list) if list.decorators.is_empty() => {
             return Error::new(Span::call_site(), error_messages::NO_DECORATORS)
@@ -551,13 +617,11 @@ pub fn decorate(attr: TokenStream, item: TokenStream) -> TokenStream {
         Err(e) => return e.to_compile_error().into(),
     };
 
-    // Parse the function
     let input_fn = match syn::parse::<ItemFn>(item) {
         Ok(f) => f,
         Err(e) => return e.to_compile_error().into(),
     };
 
-    // Validate: const functions cannot be decorated
     if let Some(const_token) = &input_fn.sig.constness {
         return create_error_with_help(
             const_token.span(),
@@ -574,11 +638,9 @@ pub fn decorate(attr: TokenStream, item: TokenStream) -> TokenStream {
     let body = &input_fn.block;
     let attrs = &input_fn.attrs;
 
-    // Generate the decorated body
     let decorated_body =
         generate_decorated_body(&decorator_list.decorators, body, &sig.inputs, is_async);
 
-    // Generate the final output
     let output = if is_async {
         quote_spanned! {sig.span()=>
             #(#attrs)*
