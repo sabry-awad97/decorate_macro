@@ -15,7 +15,7 @@ where
         location
             .file()
             .split('\\')
-            .last()
+            .next_back()
             .unwrap_or(location.file()),
         start.elapsed()
     );

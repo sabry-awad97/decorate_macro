@@ -1,7 +1,5 @@
-error: Path must start with 'self'
- --> tests/fail/invalid_self_path.rs:8:5
+error: path must start with 'self'
+ --> tests/fail/invalid_self_path.rs:8:16
   |
 8 |     #[decorate("invalid.path")] // Should fail - doesn't start with 'self'
-  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  |
-  = note: this error originates in the attribute macro `decorate` (in Nightly builds, run with -Z macro-backtrace for more info)
+  |                ^^^^^^^^^^^^^^

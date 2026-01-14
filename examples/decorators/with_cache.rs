@@ -25,15 +25,15 @@ where
         .unwrap_or_else(|poisoned| poisoned.into_inner());
 
     if let Some((cached_value, timestamp)) = cache.get(cache_key) {
-        if timestamp.elapsed() < ttl {
-            if let Some(value) = cached_value.downcast_ref::<T>() {
-                info!(
-                    "💾 Cache hit for key: [{}] ({:.2?})",
-                    cache_key,
-                    start.elapsed()
-                );
-                return Ok(value.clone());
-            }
+        if timestamp.elapsed() < ttl
+            && let Some(value) = cached_value.downcast_ref::<T>()
+        {
+            info!(
+                "💾 Cache hit for key: [{}] ({:.2?})",
+                cache_key,
+                start.elapsed()
+            );
+            return Ok(value.clone());
         }
         info!("🔄 Cache expired for key: [{}]", cache_key);
     } else {

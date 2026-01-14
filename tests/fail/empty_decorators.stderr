@@ -1,12 +1,4 @@
-error: No decorator paths provided
- --> tests/fail/empty_decorators.rs:3:1
-  |
-3 | #[decorate()]
-  | ^^^^^^^^^^^^^
-  |
-  = note: this error originates in the attribute macro `decorate` (in Nightly builds, run with -Z macro-backtrace for more info)
-
-error: Expected at least one decorator function
+error: no decorator paths provided
  --> tests/fail/empty_decorators.rs:3:1
   |
 3 | #[decorate()]
